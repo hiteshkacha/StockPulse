@@ -1,77 +1,66 @@
 'use client';
 
 import React, { useState } from 'react';
-import {
-  Download,
-  BarChart3,
-  TrendingUp,
-  ShoppingCart,
-  Boxes,
-  PieChart as PieChartIcon,
-  CheckCircle2,
-  Clock,
-  ArrowUpRight,
-} from 'lucide-react';
-import {
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  Cell,
-  PieChart,
-  Pie,
-} from 'recharts';
+import { Download, Boxes, TrendingUp, ShoppingCart } from 'lucide-react';
 import { useInventory } from '@/context/InventoryContext';
-import { downloadCSV, formatINR } from '@/lib/utils';
-import { CategoryBadge, SkuBadge, StatusBadge } from '@/components/common/Badge';
+import {
+  getProductStatus,
+  selectInventoryValue,
+  selectTotalSales,
+  selectPaidSales,
+  selectPendingSales,
+  selectTotalPurchases,
+  selectPendingPurchasesValue,
+} from '@/lib/selectors';
+import { formatINR } from '@/lib/format';
+import { downloadCSV } from '@/lib/csv';
+import { KpiCard } from '@/components/ui/Card';
+import { Button } from '@/components/ui/Button';
+import { StatusBadge, SkuBadge, CategoryBadge } from '@/components/ui/Badge';
 import { toast } from 'sonner';
 
 export default function ReportsPage() {
-  const { state, metrics } = useInventory();
-  const [activeTab, setActiveTab] = useState<'valuation' | 'sales' | 'purchases'>('valuation');
+  const { state } = useInventory();
+  const [activeTab, setActiveTab] = useState<'stock' | 'sales' | 'purchases'>('stock');
 
-  // Tab 1: Stock Valuation Calculations
-  const valuationRows = state.products.map((p) => {
-    const assetValue = p.currentStock * p.costPrice;
-    const retailValue = p.currentStock * p.sellingPrice;
-    const potentialMargin = retailValue - assetValue;
-    const marginPercentage =
-      retailValue > 0 ? Math.round((potentialMargin / retailValue) * 100) : 0;
+  // Filters for tabs
+  const [stockCategoryFilter, setStockCategoryFilter] = useState('All');
+  const [salesStatusFilter, setSalesStatusFilter] = useState('All');
+  const [purchaseStatusFilter, setPurchaseStatusFilter] = useState('All');
 
-    return {
-      id: p.id,
-      sku: p.sku,
-      name: p.name,
-      category: p.category,
-      currentStock: p.currentStock,
-      unit: p.unit,
-      costPrice: p.costPrice,
-      sellingPrice: p.sellingPrice,
-      assetValue,
-      retailValue,
-      potentialMargin,
-      marginPercentage,
-      status: p.status,
-    };
-  });
+  // --- TAB 1: STOCK CALCULATIONS ---
+  const stockRows = state.products
+    .filter((p) => (stockCategoryFilter === 'All' ? true : p.category === stockCategoryFilter))
+    .map((p) => {
+      const assetCost = p.currentStock * p.costPrice;
+      const retailVal = p.currentStock * p.sellingPrice;
+      const margin = retailVal - assetCost;
+      const marginPercent = retailVal > 0 ? Math.round((margin / retailVal) * 100) : 0;
+      const status = getProductStatus(p);
 
-  const totalAssetValue = valuationRows.reduce((acc, r) => acc + r.assetValue, 0);
-  const totalRetailVal = valuationRows.reduce((acc, r) => acc + r.retailValue, 0);
-  const totalPotentialMargin = totalRetailVal - totalAssetValue;
-  const overallMarginPercent =
-    totalRetailVal > 0 ? Math.round((totalPotentialMargin / totalRetailVal) * 100) : 0;
+      return {
+        ...p,
+        assetCost,
+        retailVal,
+        margin,
+        marginPercent,
+        status,
+      };
+    });
 
-  // Tab 2: Sales Report Calculations
-  const customerSalesMap: Record<
+  const totalAssetCost = state.products.reduce((acc, p) => acc + p.currentStock * p.costPrice, 0);
+  const totalRetailVal = state.products.reduce((acc, p) => acc + p.currentStock * p.sellingPrice, 0);
+  const totalMargin = totalRetailVal - totalAssetCost;
+
+  // --- TAB 2: SALES CALCULATIONS ---
+  const customerMap: Record<
     string,
     { name: string; count: number; total: number; paid: number; pending: number }
   > = {};
 
   state.salesOrders.forEach((so) => {
-    if (!customerSalesMap[so.customerId]) {
-      customerSalesMap[so.customerId] = {
+    if (!customerMap[so.customerId]) {
+      customerMap[so.customerId] = {
         name: so.customerName,
         count: 0,
         total: 0,
@@ -79,288 +68,262 @@ export default function ReportsPage() {
         pending: 0,
       };
     }
-    customerSalesMap[so.customerId].count += 1;
-    customerSalesMap[so.customerId].total += so.grandTotal;
+    customerMap[so.customerId].count += 1;
+    customerMap[so.customerId].total += so.grandTotal;
     if (so.status === 'Paid') {
-      customerSalesMap[so.customerId].paid += so.grandTotal;
+      customerMap[so.customerId].paid += so.grandTotal;
     } else {
-      customerSalesMap[so.customerId].pending += so.grandTotal;
+      customerMap[so.customerId].pending += so.grandTotal;
     }
   });
 
-  const customerReportRows = Object.values(customerSalesMap).sort((a, b) => b.total - a.total);
+  const customerRows = Object.values(customerMap)
+    .filter((c) => {
+      if (salesStatusFilter === 'Paid') return c.paid > 0;
+      if (salesStatusFilter === 'Pending') return c.pending > 0;
+      return true;
+    })
+    .sort((a, b) => b.total - a.total);
 
-  // Top products sold
-  const productSalesMap: Record<
+  const totalSalesVal = selectTotalSales(state);
+  const totalPaidVal = selectPaidSales(state);
+  const totalPendingVal = selectPendingSales(state);
+
+  // --- TAB 3: PURCHASES CALCULATIONS ---
+  const supplierMap: Record<
     string,
-    { sku: string; name: string; quantity: number; revenue: number }
-  > = {};
-
-  state.salesOrders.forEach((so) => {
-    so.items.forEach((item) => {
-      if (!productSalesMap[item.productId]) {
-        productSalesMap[item.productId] = {
-          sku: item.sku,
-          name: item.productName,
-          quantity: 0,
-          revenue: 0,
-        };
-      }
-      productSalesMap[item.productId].quantity += item.quantity;
-      productSalesMap[item.productId].revenue += item.total;
-    });
-  });
-
-  const topSellingProducts = Object.values(productSalesMap).sort((a, b) => b.revenue - a.revenue);
-
-  // Tab 3: Purchase Report Calculations
-  const supplierSpendMap: Record<
-    string,
-    { name: string; ordersCount: number; totalSpend: number; received: number; pending: number }
+    { name: string; count: number; total: number; received: number; pending: number }
   > = {};
 
   state.purchaseOrders.forEach((po) => {
-    if (!supplierSpendMap[po.supplierId]) {
-      supplierSpendMap[po.supplierId] = {
+    if (!supplierMap[po.supplierId]) {
+      supplierMap[po.supplierId] = {
         name: po.supplierName,
-        ordersCount: 0,
-        totalSpend: 0,
+        count: 0,
+        total: 0,
         received: 0,
         pending: 0,
       };
     }
-    supplierSpendMap[po.supplierId].ordersCount += 1;
-    supplierSpendMap[po.supplierId].totalSpend += po.totalAmount;
+    supplierMap[po.supplierId].count += 1;
+    supplierMap[po.supplierId].total += po.totalAmount;
     if (po.status === 'Received') {
-      supplierSpendMap[po.supplierId].received += po.totalAmount;
+      supplierMap[po.supplierId].received += po.totalAmount;
     } else {
-      supplierSpendMap[po.supplierId].pending += po.totalAmount;
+      supplierMap[po.supplierId].pending += po.totalAmount;
     }
   });
 
-  const supplierReportRows = Object.values(supplierSpendMap).sort(
-    (a, b) => b.totalSpend - a.totalSpend
-  );
+  const supplierRows = Object.values(supplierMap)
+    .filter((s) => {
+      if (purchaseStatusFilter === 'Received') return s.received > 0;
+      if (purchaseStatusFilter === 'Pending') return s.pending > 0;
+      return true;
+    })
+    .sort((a, b) => b.total - a.total);
 
-  // CSV Export Handler
+  const totalPurchasesVal = selectTotalPurchases(state);
+  const pendingPurchasesVal = selectPendingPurchasesValue(state);
+  const receivedPurchasesVal = totalPurchasesVal - pendingPurchasesVal;
+
+  // --- CSV EXPORT HANDLER ---
   const handleExportCSV = () => {
-    const timestamp = new Date().toISOString().split('T')[0];
-
-    if (activeTab === 'valuation') {
+    if (activeTab === 'stock') {
       const headers = [
         'SKU',
         'Product Name',
         'Category',
-        'Current Stock',
+        'Quantity',
         'Unit',
-        'Cost Price (INR)',
-        'Selling Price (INR)',
-        'Total Asset Value (INR)',
-        'Retail Value (INR)',
+        'Unit Cost (INR)',
+        'Unit Price (INR)',
+        'Asset Valuation (INR)',
+        'Retail Realization (INR)',
         'Gross Margin (%)',
         'Status',
       ];
-      const rows = valuationRows.map((r) => [
+      const rows = stockRows.map((r) => [
         r.sku,
-        `"${r.name.replace(/"/g, '""')}"`,
+        r.name,
         r.category,
         r.currentStock,
         r.unit,
         r.costPrice,
         r.sellingPrice,
-        r.assetValue,
-        r.retailValue,
-        `${r.marginPercentage}%`,
+        r.assetCost,
+        r.retailVal,
+        `${r.marginPercent}%`,
         r.status,
       ]);
-      const csv = [headers.join(','), ...rows.map((row) => row.join(','))].join('\n');
-      downloadCSV(`StockPulse_Valuation_Report_${timestamp}.csv`, csv);
-      toast.success('Stock Valuation Report exported to CSV.');
+      downloadCSV('StockPulse_Stock_Valuation_Report', headers, rows);
+      toast.success('Stock report exported to CSV');
     } else if (activeTab === 'sales') {
       const headers = [
         'Customer Name',
-        'Orders Count',
+        'Orders Placed',
         'Total Revenue (INR)',
-        'Paid (INR)',
-        'Pending (INR)',
+        'Paid Revenue (INR)',
+        'Pending Receivables (INR)',
       ];
-      const rows = customerReportRows.map((c) => [
-        `"${c.name.replace(/"/g, '""')}"`,
-        c.count,
-        c.total,
-        c.paid,
-        c.pending,
-      ]);
-      const csv = [headers.join(','), ...rows.map((row) => row.join(','))].join('\n');
-      downloadCSV(`StockPulse_Sales_Report_${timestamp}.csv`, csv);
-      toast.success('Sales Performance Report exported to CSV.');
+      const rows = customerRows.map((c) => [c.name, c.count, c.total, c.paid, c.pending]);
+      downloadCSV('StockPulse_Sales_Performance_Report', headers, rows);
+      toast.success('Sales report exported to CSV');
     } else {
       const headers = [
         'Supplier Name',
-        'Purchase Orders Count',
-        'Total Procurement (INR)',
-        'Fulfilled/Received (INR)',
-        'Pending/In-Transit (INR)',
+        'Orders Issued',
+        'Total Spend (INR)',
+        'Received Value (INR)',
+        'Pending Value (INR)',
       ];
-      const rows = supplierReportRows.map((s) => [
-        `"${s.name.replace(/"/g, '""')}"`,
-        s.ordersCount,
-        s.totalSpend,
-        s.received,
-        s.pending,
-      ]);
-      const csv = [headers.join(','), ...rows.map((row) => row.join(','))].join('\n');
-      downloadCSV(`StockPulse_Purchase_Report_${timestamp}.csv`, csv);
-      toast.success('Supplier Procurement Report exported to CSV.');
+      const rows = supplierRows.map((s) => [s.name, s.count, s.total, s.received, s.pending]);
+      downloadCSV('StockPulse_Purchase_Spend_Report', headers, rows);
+      toast.success('Purchase report exported to CSV');
     }
   };
 
+  const categories = ['All', 'Electronics', 'Industrial Hardware', 'Packaging', 'Office Equipment'];
+
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-bold tracking-tight text-slate-900">
-            Business Intelligence & Reports
-          </h2>
-          <p className="text-xs text-slate-500 mt-1">
-            Financial analytics, gross asset margins, customer revenue concentration, and supplier spend.
-          </p>
+      {/* Tab Nav & CSV Button */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-3">
+        <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg text-xs font-medium self-start sm:self-auto">
+          <button
+            onClick={() => setActiveTab('stock')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all ${
+              activeTab === 'stock'
+                ? 'bg-white text-slate-900 font-semibold shadow-xs'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Boxes size={14} />
+            <span>Stock Report</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('sales')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all ${
+              activeTab === 'sales'
+                ? 'bg-white text-slate-900 font-semibold shadow-xs'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <TrendingUp size={14} />
+            <span>Sales Report</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('purchases')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all ${
+              activeTab === 'purchases'
+                ? 'bg-white text-slate-900 font-semibold shadow-xs'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <ShoppingCart size={14} />
+            <span>Purchase Report</span>
+          </button>
         </div>
 
-        <button
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={handleExportCSV}
-          className="flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg shadow-xs transition-colors self-start sm:self-auto"
+          icon={<Download size={14} />}
         >
-          <Download className="h-4 w-4 text-slate-500" />
-          <span>Export CSV</span>
-        </button>
+          Export CSV
+        </Button>
       </div>
 
-      {/* Tabs navigation */}
-      <div className="flex items-center gap-2 border-b border-slate-200">
-        <button
-          onClick={() => setActiveTab('valuation')}
-          className={`flex items-center gap-2 pb-3 px-3 text-xs font-semibold transition-all border-b-2 ${
-            activeTab === 'valuation'
-              ? 'border-indigo-600 text-indigo-600'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          <Boxes className="h-4 w-4" />
-          <span>Stock Valuation & Margins</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('sales')}
-          className={`flex items-center gap-2 pb-3 px-3 text-xs font-semibold transition-all border-b-2 ${
-            activeTab === 'sales'
-              ? 'border-indigo-600 text-indigo-600'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          <TrendingUp className="h-4 w-4" />
-          <span>Sales & Customer Performance</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('purchases')}
-          className={`flex items-center gap-2 pb-3 px-3 text-xs font-semibold transition-all border-b-2 ${
-            activeTab === 'purchases'
-              ? 'border-indigo-600 text-indigo-600'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          <ShoppingCart className="h-4 w-4" />
-          <span>Procurement & Supplier Spend</span>
-        </button>
-      </div>
-
-      {/* Tab 1: Valuation Content */}
-      {activeTab === 'valuation' && (
+      {/* --- TAB 1: STOCK --- */}
+      {activeTab === 'stock' && (
         <div className="space-y-6">
-          {/* Summary Strip */}
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-            <div className="p-4 rounded-xl bg-white border border-slate-200/80 shadow-xs">
-              <span className="text-xs text-slate-500">Total Asset Cost</span>
-              <div className="text-xl font-bold font-mono tracking-tight text-slate-900 mt-2 tabular-nums">
-                {formatINR(totalAssetValue)}
-              </div>
-              <p className="text-[11px] text-slate-400 mt-1">Carrying cost of current holdings</p>
-            </div>
-
-            <div className="p-4 rounded-xl bg-white border border-slate-200/80 shadow-xs">
-              <span className="text-xs text-slate-500">Total Retail Value</span>
-              <div className="text-xl font-bold font-mono tracking-tight text-indigo-600 mt-2 tabular-nums">
-                {formatINR(totalRetailVal)}
-              </div>
-              <p className="text-[11px] text-slate-400 mt-1">Estimated gross sales realization</p>
-            </div>
-
-            <div className="p-4 rounded-xl bg-white border border-slate-200/80 shadow-xs">
-              <span className="text-xs text-slate-500">Unrealized Gross Margin</span>
-              <div className="text-xl font-bold font-mono tracking-tight text-emerald-600 mt-2 tabular-nums">
-                {formatINR(totalPotentialMargin)}
-              </div>
-              <p className="text-[11px] text-slate-400 mt-1">Potential gross profit buffer</p>
-            </div>
-
-            <div className="p-4 rounded-xl bg-white border border-slate-200/80 shadow-xs">
-              <span className="text-xs text-slate-500">Average Gross Markup</span>
-              <div className="text-xl font-bold font-mono tracking-tight text-amber-600 mt-2 tabular-nums">
-                {overallMarginPercent}%
-              </div>
-              <p className="text-[11px] text-slate-400 mt-1">Weighted gross margin spread</p>
-            </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <KpiCard
+              label="Total Asset Cost"
+              value={formatINR(totalAssetCost)}
+              subtext="Carrying value of all items"
+            />
+            <KpiCard
+              label="Total Retail Value"
+              value={formatINR(totalRetailVal)}
+              subtext="Expected gross realization"
+            />
+            <KpiCard
+              label="Unrealized Gross Margin"
+              value={formatINR(totalMargin)}
+              subtext={`${totalRetailVal > 0 ? Math.round((totalMargin / totalRetailVal) * 100) : 0}% average margin spread`}
+              subtextColor="text-emerald-600 font-medium"
+            />
           </div>
 
-          {/* Detailed Valuation Table */}
-          <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+          {/* Filter Bar */}
+          <div className="flex items-center justify-between bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-slate-500 font-medium">Filter Category:</span>
+              <select
+                value={stockCategoryFilter}
+                onChange={(e) => setStockCategoryFilter(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              >
+                {categories.map((c) => (
+                  <option key={c} value={c}>
+                    {c === 'All' ? 'All Categories' : c}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <span className="text-xs text-slate-500">{stockRows.length} items listed</span>
+          </div>
+
+          {/* Table */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase text-[10px] tracking-wider">
+                <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase text-[10px] tracking-wide">
+                  <tr>
                     <th className="py-3 px-4">Item & SKU</th>
                     <th className="py-3 px-4">Category</th>
-                    <th className="py-3 px-4 text-right">Holding Units</th>
-                    <th className="py-3 px-4 text-right">Unit Cost (₹)</th>
-                    <th className="py-3 px-4 text-right">Unit Retail (₹)</th>
-                    <th className="py-3 px-4 text-right">Asset Cost (₹)</th>
-                    <th className="py-3 px-4 text-right">Retail Realization (₹)</th>
-                    <th className="py-3 px-4 text-right">Margin (%)</th>
-                    <th className="py-3 px-4 text-center">Status</th>
+                    <th className="py-3 px-4 text-right whitespace-nowrap">Stock</th>
+                    <th className="py-3 px-4 text-right whitespace-nowrap">Cost</th>
+                    <th className="py-3 px-4 text-right whitespace-nowrap">Price</th>
+                    <th className="py-3 px-4 text-right whitespace-nowrap">Asset Value</th>
+                    <th className="py-3 px-4 text-right whitespace-nowrap">Retail Value</th>
+                    <th className="py-3 px-4 text-right whitespace-nowrap">Margin (%)</th>
+                    <th className="py-3 px-4 text-center whitespace-nowrap">Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {valuationRows.map((row) => (
-                    <tr key={row.id} className="hover:bg-slate-50/80 transition-colors">
-                      <td className="py-3 px-4">
-                        <div className="font-semibold text-slate-900">{row.name}</div>
-                        <span className="font-mono text-[11px] text-indigo-600">{row.sku}</span>
+                  {stockRows.map((r) => (
+                    <tr key={r.id} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="py-2.5 px-4">
+                        <div className="flex items-center gap-2">
+                          <SkuBadge sku={r.sku} />
+                          <span className="font-semibold text-slate-900 truncate max-w-xs">{r.name}</span>
+                        </div>
                       </td>
-                      <td className="py-3 px-4">
-                        <CategoryBadge category={row.category} />
+                      <td className="py-2.5 px-4 whitespace-nowrap">
+                        <CategoryBadge category={r.category} />
                       </td>
-                      <td className="py-3 px-4 text-right font-mono font-bold text-slate-900 tabular-nums">
-                        {row.currentStock} {row.unit}
+                      <td className="py-2.5 px-4 text-right font-semibold text-slate-900 tabular-nums whitespace-nowrap">
+                        {r.currentStock} {r.unit}
                       </td>
-                      <td className="py-3 px-4 text-right font-mono tabular-nums text-slate-700">
-                        {formatINR(row.costPrice)}
+                      <td className="py-2.5 px-4 text-right tabular-nums text-slate-600 whitespace-nowrap">
+                        {formatINR(r.costPrice)}
                       </td>
-                      <td className="py-3 px-4 text-right font-mono tabular-nums text-slate-700">
-                        {formatINR(row.sellingPrice)}
+                      <td className="py-2.5 px-4 text-right tabular-nums text-slate-600 whitespace-nowrap">
+                        {formatINR(r.sellingPrice)}
                       </td>
-                      <td className="py-3 px-4 text-right font-mono font-semibold tabular-nums text-slate-900">
-                        {formatINR(row.assetValue)}
+                      <td className="py-2.5 px-4 text-right font-semibold tabular-nums text-slate-900 whitespace-nowrap">
+                        {formatINR(r.assetCost)}
                       </td>
-                      <td className="py-3 px-4 text-right font-mono font-semibold tabular-nums text-indigo-700">
-                        {formatINR(row.retailValue)}
+                      <td className="py-2.5 px-4 text-right font-semibold tabular-nums text-indigo-700 whitespace-nowrap">
+                        {formatINR(r.retailVal)}
                       </td>
-                      <td className="py-3 px-4 text-right font-mono font-bold tabular-nums text-emerald-600">
-                        {row.marginPercentage}%
+                      <td className="py-2.5 px-4 text-right font-semibold tabular-nums text-emerald-600 whitespace-nowrap">
+                        {r.marginPercent}%
                       </td>
-                      <td className="py-3 px-4 text-center">
-                        <StatusBadge status={row.status} />
+                      <td className="py-2.5 px-4 text-center whitespace-nowrap">
+                        <StatusBadge status={r.status} />
                       </td>
                     </tr>
                   ))}
@@ -371,142 +334,155 @@ export default function ReportsPage() {
         </div>
       )}
 
-      {/* Tab 2: Sales Content */}
+      {/* --- TAB 2: SALES --- */}
       {activeTab === 'sales' && (
         <div className="space-y-6">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Top Products by Revenue */}
-            <div className="p-5 rounded-2xl bg-white border border-slate-200/80 shadow-xs">
-              <h3 className="text-sm font-bold text-slate-900 tracking-tight mb-1">
-                Top Revenue Generating SKUs
-              </h3>
-              <p className="text-xs text-slate-500 mb-4">
-                Total commercial gross billing across all completed and pending orders.
-              </p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <KpiCard
+              label="Total Revenue"
+              value={formatINR(totalSalesVal)}
+              subtext="Gross billing to date"
+            />
+            <KpiCard
+              label="Collected Revenue"
+              value={formatINR(totalPaidVal)}
+              subtext="Settled invoices"
+              subtextColor="text-emerald-600 font-medium"
+            />
+            <KpiCard
+              label="Pending Receivables"
+              value={formatINR(totalPendingVal)}
+              subtext="Awaiting customer clearance"
+              subtextColor="text-amber-600 font-medium"
+            />
+          </div>
 
-              <div className="space-y-3">
-                {topSellingProducts.slice(0, 5).map((item, idx) => (
-                  <div
-                    key={item.sku}
-                    className="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-200/60 text-xs"
-                  >
-                    <div className="flex items-center gap-3">
-                      <span className="font-mono font-bold text-slate-400 w-4">#{idx + 1}</span>
-                      <div>
-                        <div className="font-semibold text-slate-900">{item.name}</div>
-                        <div className="font-mono text-[11px] text-slate-500">
-                          {item.sku} • {item.quantity} units sold
-                        </div>
-                      </div>
-                    </div>
-                    <span className="font-mono font-bold text-slate-900 tabular-nums">
-                      {formatINR(item.revenue)}
-                    </span>
-                  </div>
-                ))}
-              </div>
+          {/* Filter Bar */}
+          <div className="flex items-center justify-between bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-slate-500 font-medium">Filter Status:</span>
+              <select
+                value={salesStatusFilter}
+                onChange={(e) => setSalesStatusFilter(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              >
+                <option value="All">All Invoices</option>
+                <option value="Paid">Paid Only</option>
+                <option value="Pending">Pending Only</option>
+              </select>
             </div>
+            <span className="text-xs text-slate-500">{customerRows.length} customers</span>
+          </div>
 
-            {/* Customer Revenue Concentration */}
-            <div className="p-5 rounded-2xl bg-white border border-slate-200/80 shadow-xs">
-              <h3 className="text-sm font-bold text-slate-900 tracking-tight mb-1">
-                Customer Sales Breakdown
-              </h3>
-              <p className="text-xs text-slate-500 mb-4">
-                Cumulative revenue and collection settlement status per B2B customer.
-              </p>
-
-              <div className="space-y-3">
-                {customerReportRows.map((cust) => (
-                  <div
-                    key={cust.name}
-                    className="p-3 rounded-xl bg-slate-50 border border-slate-200/60 text-xs space-y-1.5"
-                  >
-                    <div className="flex justify-between items-center">
-                      <span className="font-semibold text-slate-900">{cust.name}</span>
-                      <span className="font-mono font-bold text-slate-900 tabular-nums">
-                        {formatINR(cust.total)}
-                      </span>
-                    </div>
-                    <div className="flex justify-between items-center text-[11px] text-slate-500">
-                      <span>{cust.count} order(s) placed</span>
-                      <div className="flex gap-2">
-                        <span className="text-emerald-600 font-medium">
-                          Paid: {formatINR(cust.paid)}
-                        </span>
-                        {cust.pending > 0 && (
-                          <span className="text-amber-600 font-medium">
-                            Pending: {formatINR(cust.pending)}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
+          {/* Table */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase text-[10px] tracking-wide">
+                  <tr>
+                    <th className="py-3 px-4">Customer Name</th>
+                    <th className="py-3 px-4 text-center whitespace-nowrap">Orders Count</th>
+                    <th className="py-3 px-4 text-right whitespace-nowrap">Total Billed</th>
+                    <th className="py-3 px-4 text-right whitespace-nowrap">Paid Amount</th>
+                    <th className="py-3 px-4 text-right whitespace-nowrap">Pending Receivables</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {customerRows.map((c) => (
+                    <tr key={c.name} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="py-3 px-4 font-semibold text-slate-900">{c.name}</td>
+                      <td className="py-3 px-4 text-center tabular-nums text-slate-600 font-medium">
+                        {c.count}
+                      </td>
+                      <td className="py-3 px-4 text-right font-semibold text-slate-900 tabular-nums whitespace-nowrap">
+                        {formatINR(c.total)}
+                      </td>
+                      <td className="py-3 px-4 text-right font-semibold text-emerald-600 tabular-nums whitespace-nowrap">
+                        {formatINR(c.paid)}
+                      </td>
+                      <td className="py-3 px-4 text-right font-semibold text-amber-600 tabular-nums whitespace-nowrap">
+                        {formatINR(c.pending)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
       )}
 
-      {/* Tab 3: Purchase Content */}
+      {/* --- TAB 3: PURCHASES --- */}
       {activeTab === 'purchases' && (
         <div className="space-y-6">
-          <div className="p-5 rounded-2xl bg-white border border-slate-200/80 shadow-xs">
-            <h3 className="text-sm font-bold text-slate-900 tracking-tight mb-1">
-              Supplier Spend & Inward Procurement Fulfillment
-            </h3>
-            <p className="text-xs text-slate-500 mb-4">
-              Breakdown of total purchase orders committed vs. fulfilled per approved vendor.
-            </p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <KpiCard
+              label="Total Procurement Spend"
+              value={formatINR(totalPurchasesVal)}
+              subtext="Committed vendor contracts"
+            />
+            <KpiCard
+              label="Received Inward Value"
+              value={formatINR(receivedPurchasesVal)}
+              subtext="Inventory received into stock"
+              subtextColor="text-emerald-600 font-medium"
+            />
+            <KpiCard
+              label="Pending Delivery Value"
+              value={formatINR(pendingPurchasesVal)}
+              subtext="Orders awaiting arrival"
+              subtextColor="text-amber-600 font-medium"
+            />
+          </div>
 
+          {/* Filter Bar */}
+          <div className="flex items-center justify-between bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-slate-500 font-medium">Filter Status:</span>
+              <select
+                value={purchaseStatusFilter}
+                onChange={(e) => setPurchaseStatusFilter(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              >
+                <option value="All">All Vendors</option>
+                <option value="Received">With Received Deliveries</option>
+                <option value="Pending">With Pending Inward Orders</option>
+              </select>
+            </div>
+            <span className="text-xs text-slate-500">{supplierRows.length} vendors</span>
+          </div>
+
+          {/* Table */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase text-[10px] tracking-wider">
+                <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase text-[10px] tracking-wide">
+                  <tr>
                     <th className="py-3 px-4">Vendor / Supplier</th>
-                    <th className="py-3 px-4 text-center">Orders Issued</th>
-                    <th className="py-3 px-4 text-right">Total Committed (₹)</th>
-                    <th className="py-3 px-4 text-right">Fulfilled / Received (₹)</th>
-                    <th className="py-3 px-4 text-right">Pending Arrival (₹)</th>
-                    <th className="py-3 px-4 text-center">Fulfillment Status</th>
+                    <th className="py-3 px-4 text-center whitespace-nowrap">Orders Issued</th>
+                    <th className="py-3 px-4 text-right whitespace-nowrap">Total Committed</th>
+                    <th className="py-3 px-4 text-right whitespace-nowrap">Received Value</th>
+                    <th className="py-3 px-4 text-right whitespace-nowrap">Pending Value</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {supplierReportRows.map((sup) => {
-                    const isAllReceived = sup.pending === 0;
-
-                    return (
-                      <tr key={sup.name} className="hover:bg-slate-50/80 transition-colors">
-                        <td className="py-3 px-4 font-semibold text-slate-900">{sup.name}</td>
-                        <td className="py-3 px-4 text-center font-mono font-medium text-slate-700">
-                          {sup.ordersCount}
-                        </td>
-                        <td className="py-3 px-4 text-right font-mono font-bold text-slate-900 tabular-nums">
-                          {formatINR(sup.totalSpend)}
-                        </td>
-                        <td className="py-3 px-4 text-right font-mono font-semibold text-emerald-600 tabular-nums">
-                          {formatINR(sup.received)}
-                        </td>
-                        <td className="py-3 px-4 text-right font-mono font-semibold text-amber-600 tabular-nums">
-                          {formatINR(sup.pending)}
-                        </td>
-                        <td className="py-3 px-4 text-center">
-                          {isAllReceived ? (
-                            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600">
-                              <CheckCircle2 className="h-3.5 w-3.5" />
-                              <span>100% Fulfilled</span>
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-600">
-                              <Clock className="h-3.5 w-3.5" />
-                              <span>Shipment In-Transit</span>
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {supplierRows.map((s) => (
+                    <tr key={s.name} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="py-3 px-4 font-semibold text-slate-900">{s.name}</td>
+                      <td className="py-3 px-4 text-center tabular-nums text-slate-600 font-medium">
+                        {s.count}
+                      </td>
+                      <td className="py-3 px-4 text-right font-semibold text-slate-900 tabular-nums whitespace-nowrap">
+                        {formatINR(s.total)}
+                      </td>
+                      <td className="py-3 px-4 text-right font-semibold text-emerald-600 tabular-nums whitespace-nowrap">
+                        {formatINR(s.received)}
+                      </td>
+                      <td className="py-3 px-4 text-right font-semibold text-amber-600 tabular-nums whitespace-nowrap">
+                        {formatINR(s.pending)}
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>

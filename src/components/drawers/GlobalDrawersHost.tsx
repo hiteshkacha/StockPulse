@@ -4,10 +4,9 @@ import React from 'react';
 import { CreateSaleDrawer } from './CreateSaleDrawer';
 import { CreatePurchaseDrawer } from './CreatePurchaseDrawer';
 import { StockHistoryDrawer } from './StockHistoryDrawer';
-import { TransferStockDrawer } from './TransferStockDrawer';
 import { AdjustStockDrawer } from './AdjustStockDrawer';
 import { AddProductDrawer } from './AddProductDrawer';
-import { InvoiceModal } from '@/components/modals/InvoiceModal';
+import { SaleDetailDrawer } from './SaleDetailDrawer';
 
 export function GlobalDrawersHost() {
   return (
@@ -15,10 +14,9 @@ export function GlobalDrawersHost() {
       <CreateSaleDrawer />
       <CreatePurchaseDrawer />
       <StockHistoryDrawer />
-      <TransferStockDrawer />
       <AdjustStockDrawer />
       <AddProductDrawer />
-      <InvoiceModal />
+      <SaleDetailDrawer />
     </>
   );
 }
